@@ -23,20 +23,18 @@
 
  */
 
-#include "pebble_os.h"
-#include "pebble_app.h"
-#include "pebble_fonts.h"
+#include <pebble.h>
+#include <time.h>
 
 #include "resource_ids.auto.h"
-
 	
 #define MY_UUID {0x12, 0xAB, 0xF1, 0xD8, 0xC4, 0x74, 0x47, 0x96, 0x81, 0x83, 0x77, 0xE2, 0x7E, 0x0A, 0xCB, 0xA5}
-PBL_APP_INFO(MY_UUID, "Big Time Date", "Pebble Technology", 0x5, 0x0, RESOURCE_ID_IMAGE_MENU_ICON, APP_INFO_WATCH_FACE);
+//PBL_APP_INFO(MY_UUID, "Big Time Date", "Pebble Technology", 0x5, 0x0, RESOURCE_ID_IMAGE_MENU_ICON, APP_INFO_WATCH_FACE);
 
-Window window;
-TextLayer date_layer;
+static Window *window;
+static TextLayer *date_layer;
 
-GFont font_date;        // Font for date
+static GFont font_date;        // Font for date
 
 //
 // There's only enough memory to load about 6 of 10 required images
@@ -67,7 +65,8 @@ const int IMAGE_RESOURCE_IDS[NUMBER_OF_IMAGES] = {
   RESOURCE_ID_IMAGE_NUM_9
 };
 
-BmpContainer image_containers[TOTAL_IMAGE_SLOTS];
+static GBitmap *images[TOTAL_IMAGE_SLOTS];
+static BitmapLayer *image_layers[TOTAL_IMAGE_SLOTS];
 
 #define EMPTY_SLOT -1
 
@@ -75,10 +74,10 @@ BmpContainer image_containers[TOTAL_IMAGE_SLOTS];
 // the slot--which was going to be used to assist with de-duplication
 // but we're not doing that due to the one parent-per-layer
 // restriction mentioned above.
-int image_slot_state[TOTAL_IMAGE_SLOTS] = {EMPTY_SLOT, EMPTY_SLOT, EMPTY_SLOT, EMPTY_SLOT};
+static int image_slot_state[TOTAL_IMAGE_SLOTS] = {EMPTY_SLOT, EMPTY_SLOT, EMPTY_SLOT, EMPTY_SLOT};
 
 
-void load_digit_image_into_slot(int slot_number, int digit_value) {
+static void load_digit_image_into_slot(int slot_number, int digit_value) {
   /*
 
      Loads the digit image from the application's resources and
@@ -102,16 +101,27 @@ void load_digit_image_into_slot(int slot_number, int digit_value) {
     return;
   }
 
-  image_slot_state[slot_number] = digit_value;
-  bmp_init_container(IMAGE_RESOURCE_IDS[digit_value], &image_containers[slot_number]);
-  image_containers[slot_number].layer.layer.frame.origin.x = (slot_number % 2) * 72;
-  image_containers[slot_number].layer.layer.frame.origin.y = (slot_number / 2) * 64;
-  layer_add_child(&window.layer, &image_containers[slot_number].layer.layer);
+  //image_slot_state[slot_number] = digit_value;
+  //bmp_init_container(IMAGE_RESOURCE_IDS[digit_value], &image_containers[slot_number]);
+  //image_containers[slot_number].layer.layer.frame.origin.x = (slot_number % 2) * 72;
+  //image_containers[slot_number].layer.layer.frame.origin.y = (slot_number / 2) * 64;
+  //layer_add_child(&window.layer, &image_containers[slot_number].layer.layer);
 
+  image_slot_state[slot_number] = digit_value;
+  images[slot_number] = gbitmap_create_with_resource(IMAGE_RESOURCE_IDS[digit_value]);
+  GRect frame = (GRect) {
+    .origin = { (slot_number % 2) * 72, (slot_number / 2) * 64 },
+    .size = images[slot_number]->bounds.size
+  };
+  BitmapLayer *bitmap_layer = bitmap_layer_create(frame);
+  image_layers[slot_number] = bitmap_layer;
+  bitmap_layer_set_bitmap(bitmap_layer, images[slot_number]);
+  Layer *window_layer = window_get_root_layer(window);
+  layer_add_child(window_layer, bitmap_layer_get_layer(bitmap_layer));
 }
 
 
-void unload_digit_image_from_slot(int slot_number) {
+static void unload_digit_image_from_slot(int slot_number) {
   /*
 
      Removes the digit from the display and unloads the image resource
@@ -121,16 +131,24 @@ void unload_digit_image_from_slot(int slot_number) {
 
    */
 
+	/*
   if (image_slot_state[slot_number] != EMPTY_SLOT) {
     layer_remove_from_parent(&image_containers[slot_number].layer.layer);
     bmp_deinit_container(&image_containers[slot_number]);
+    image_slot_state[slot_number] = EMPTY_SLOT;
+  }
+*/
+	if (image_slot_state[slot_number] != EMPTY_SLOT) {
+    layer_remove_from_parent(bitmap_layer_get_layer(image_layers[slot_number]));
+    bitmap_layer_destroy(image_layers[slot_number]);
+    gbitmap_destroy(images[slot_number]);
     image_slot_state[slot_number] = EMPTY_SLOT;
   }
 
 }
 
 
-void display_value(unsigned short value, unsigned short row_number, bool show_first_leading_zero) {
+static void display_value(unsigned short value, unsigned short row_number, bool show_first_leading_zero) {
   /*
 
      Displays a numeric value between 0 and 99 on screen.
@@ -174,7 +192,7 @@ unsigned short get_display_hour(unsigned short hour) {
 }
 
 
-void display_time(PblTm *tick_time) {
+static void display_time(struct tm *tick_time) {
 
   // TODO: Use `units_changed` and more intelligence to reduce
   //       redundant digit unload/load?
@@ -183,15 +201,15 @@ void display_time(PblTm *tick_time) {
   display_value(tick_time->tm_min, 1, true);
 }
 
-void display_date(PebbleTickEvent *t) {
+void display_date(struct tm *tick_time, TimeUnits units_changed) {
 	static char date_text[] = "XXX 00";
 	
-	if (t->units_changed & DAY_UNIT)
+	if (units_changed & DAY_UNIT)
 	    {		
-		    string_format_time(date_text,
+		    strftime(date_text,
 	                           sizeof(date_text),
 	                           "%a %d",
-	                           t->tick_time);
+	                           tick_time);
 
 			// Triggered if day of month < 10
 			if (date_text[4] == '0')
@@ -246,76 +264,67 @@ void display_date(PebbleTickEvent *t) {
 			
 			*** LOCALIZATION CODE END ***/
 			
-	        text_layer_set_text(&date_layer, date_text);
+	        text_layer_set_text(date_layer, date_text);
 	    }
 
 }
 
-
-void handle_minute_tick(AppContextRef ctx, PebbleTickEvent *t) {
-  (void)t;
-  (void)ctx;
-
-  display_time(t->tick_time);	
-  display_date(t);
+static void handle_minute_tick(struct tm *tick_time, TimeUnits units_changed) {
+    display_time(tick_time);	
+    display_date(tick_time, units_changed);
 }
 
 
-void handle_init(AppContextRef ctx) {
-  (void)ctx;
+static void handle_init(void) {
 
-  window_init(&window, "Big Time watch");
-  window_stack_push(&window, true);
-  window_set_background_color(&window, GColorBlack);
+  tick_timer_service_subscribe(MINUTE_UNIT, handle_minute_tick);
+  window = window_create();
+  //window_init(&window, "Big Time watch");
+  window_stack_push(window, true);
+  window_set_background_color(window, GColorBlack);
 
-  resource_init_current_app(&APP_RESOURCES);
+  //resource_init_current_app(&APP_RESOURCES);
 
   ResHandle res_d;	
 
 	res_d = resource_get_handle(RESOURCE_ID_FUTURA_28); // Date font
     font_date = fonts_load_custom_font(res_d);
-	text_layer_init(&date_layer, window.layer.frame);
-    text_layer_set_text_color(&date_layer, GColorWhite);
-    text_layer_set_background_color(&date_layer, GColorClear);
-    text_layer_set_font(&date_layer, font_date);
-    text_layer_set_text_alignment(&date_layer, GTextAlignmentCenter);
-    layer_set_frame(&date_layer.layer, DATE_FRAME);
-    layer_add_child(&window.layer, &date_layer.layer);
+	Layer *window_layer = window_get_root_layer(window);
+	GRect frame = layer_get_frame(window_layer);
+	date_layer = text_layer_create(DATE_FRAME);
+	//text_layer_init(&date_layer, window.layer.frame);
+    text_layer_set_text_color(date_layer, GColorWhite);
+    text_layer_set_background_color(date_layer, GColorClear);
+    text_layer_set_font(date_layer, font_date);
+    text_layer_set_text_alignment(date_layer, GTextAlignmentCenter);
+//    layer_set_frame(date_layer, DATE_FRAME);
+    layer_add_child(window_layer, text_layer_get_layer(date_layer));
 	
   // Avoids a blank screen on watch start.
-  PblTm tick_time;
-  PebbleTickEvent t;
-  t.tick_time = &tick_time;
-  t.units_changed = SECOND_UNIT | MINUTE_UNIT | HOUR_UNIT | DAY_UNIT;
-
-  get_time(&tick_time);
-  display_time(&tick_time);
-  display_date(&t);
+  time_t now = time(NULL);
+  struct tm *tick_time = localtime(&now);
+  display_time(tick_time);	
+  display_date(tick_time, DAY_UNIT);
 }
 
 
-void handle_deinit(AppContextRef ctx) {
-  (void)ctx;
-
+static void handle_deinit() {
+	
   for (int i = 0; i < TOTAL_IMAGE_SLOTS; i++) {
     unload_digit_image_from_slot(i);
   }
 	
-  fonts_unload_custom_font(font_date);
+  text_layer_destroy(date_layer);
+	
+  //fonts_unload_custom_font(font_date);
+	
+  window_destroy(window);
 
 }
 
 
-void pbl_main(void *params) {
-  PebbleAppHandlers handlers = {
-    .init_handler = &handle_init,
-    .deinit_handler = &handle_deinit,
-
-    .tick_info = {
-      .tick_handler = &handle_minute_tick,
-      .tick_units = MINUTE_UNIT
-    }
-
-  };
-  app_event_loop(params, &handlers);
+int main(void) {
+  handle_init();
+  app_event_loop();
+  handle_deinit();
 }
